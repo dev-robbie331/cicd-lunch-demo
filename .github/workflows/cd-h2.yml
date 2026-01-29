@@ -1,8 +1,8 @@
-name: CD
+name: CD (H2)
 
 on:
   push:
-    branches: ["main"]
+    branches: ["develop"]
   workflow_dispatch:
     inputs:
       deploy:
@@ -19,6 +19,7 @@ jobs:
   build-and-push:
     name: Build JAR & Push Docker Image (arm64 only)
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -62,19 +63,20 @@ jobs:
           cache-to: type=gha,mode=max
 
   deploy:
-    name: Deploy to EC2 (SSM) - by SHA tag
+    name: Deploy to EC2 (SSM + AccessKey)
     runs-on: ubuntu-latest
     needs: build-and-push
     if: ${{ github.event_name == 'push' || inputs.deploy }}
+
     steps:
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials (Access Key)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ap-northeast-2
 
-      - name: Deploy via SSM (compose pull/up + health)
+      - name: Deploy via SSM (deploy by SHA tag)
         env:
           REGION: ap-northeast-2
           INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
@@ -88,20 +90,14 @@ jobs:
           {
             "commands": [
               "set -euo pipefail",
-              "cd /home/ec2-user/app",
-
+              "docker version",
               "echo \"$DOCKERHUB_TOKEN\" | docker login -u \"$DOCKERHUB_USERNAME\" --password-stdin",
-
-              "export DOCKERHUB_USERNAME=\"$DOCKERHUB_USERNAME\"",
-              "export IMAGE_TAG=\"$IMAGE_TAG\"",
-
-              "docker compose pull",
-              "docker compose up -d",
-
-              "sleep 30",
-              "curl -fsS http://localhost:8080/actuator/health > /dev/null",
-
-              "docker image prune -f --filter \"until=168h\""
+              "docker pull \"$DOCKERHUB_USERNAME/lunch-app:$IMAGE_TAG\"",
+              "docker stop lunch-app || true",
+              "docker rm lunch-app || true",
+              "docker run -d --name lunch-app -p 8080:8080 -e \"SPRING_DATASOURCE_URL=jdbc:h2:mem:lunch;MODE=MySQL\" -e \"SPRING_DATASOURCE_DRIVER_CLASS_NAME=org.h2.Driver\" -e \"SPRING_JPA_DATABASE_PLATFORM=org.hibernate.dialect.H2Dialect\" -e \"SPRING_JPA_HIBERNATE_DDL_AUTO=create\" -e \"SPRING_FLYWAY_ENABLED=false\" --restart always \"$DOCKERHUB_USERNAME/lunch-app:$IMAGE_TAG\"",
+              "docker ps | grep lunch-app",
+              "docker logs --tail 50 lunch-app || true"
             ]
           }
           JSON
